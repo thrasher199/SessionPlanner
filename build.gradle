@@ -21,6 +21,8 @@ def modulePrefix = 'app'
 def globalModule = project(":${modulePrefix}-global")
 def coreModule = project(":${modulePrefix}-core")
 def webModule = project(":${modulePrefix}-web")
+def frontModule = project(":${modulePrefix}-front")
+def webToolkitModule = project(":${modulePrefix}-web-toolkit")
 
 def servletApi = 'javax.servlet:javax.servlet-api:3.1.0'
 
@@ -40,11 +42,12 @@ cuba {
 
 dependencies {
     appComponent("com.haulmont.cuba:cuba-global:$cubaVersion")
+    appComponent('com.haulmont.addon.restapi:restapi-global:7.1.1')
 }
 
 def hsql = 'org.hsqldb:hsqldb:2.4.1'
 
-configure([globalModule, coreModule, webModule]) {
+configure([globalModule, coreModule, webModule, webToolkitModule]) {
     apply(plugin: 'java')
     apply(plugin: 'maven')
     apply(plugin: 'cuba')
@@ -145,8 +148,16 @@ configure(webModule) {
     dependencies {
         compileOnly(servletApi)
         compile(globalModule)
+        compile(group:'org.vaadin.addons',name: 'subwindowdesktop-and-subwindow-component', version:'0.9.6')
         testCompile(group: 'org.seleniumhq.selenium', name: 'selenium-java', version: '3.141.59')
         testCompile(group: 'com.codeborne', name: 'selenide', version: '5.5.1')
+    }
+
+    jar {
+        with copySpec {
+            from sourceSets.main.allJava
+            include "com/nasrol/sessionplanner/web/toolkit/ui/client/**"
+        }
     }
 
     task webArchive(type: Zip) {
@@ -192,13 +203,86 @@ configure(webModule) {
     }
 }
 
+configure(webToolkitModule) {
+    dependencies {
+        compile(webModule)
+    }
+
+    jar {
+        from sourceSets.main.allJava
+    }
+
+    task buildWidgetSet(type: CubaWidgetSetBuilding) {
+        widgetSetClass = 'com.nasrol.sessionplanner.web.toolkit.ui.AppWidgetSet'
+    }
+
+    task debugWidgetSet(type: CubaWidgetSetDebug) {
+        widgetSetClass = 'com.nasrol.sessionplanner.web.toolkit.ui.AppWidgetSet'
+    }
+
+    task webArchive(dependsOn: buildWidgetSet, type: Jar) {
+        from file("$buildDir/web")
+        classifier = 'client'
+    }
+
+    artifacts {
+        archives webArchive
+    }
+
+    task deploy(dependsOn: webArchive, type: Copy) {
+        from webArchive
+        into "$cuba.tomcat.dir/webapps/${modulePrefix}/WEB-INF/lib"
+    }
+}
+
+configure(frontModule) {
+    apply(plugin: 'cuba')
+    apply(plugin: 'idea')
+    apply(plugin: 'war')
+    apply(plugin: 'maven')
+
+    buildDir = 'build-gradle'
+
+    def frontAppDir = "${modulePrefix}-front"
+
+
+    def mainBuildDir = 'build'
+
+
+    node {
+        download true
+        version '10.14.1'
+    }
+
+    task buildFrontend(type: NpmTask, dependsOn: npmInstall) {
+        args = ['run', 'build']
+        inputs.files fileTree('./') {
+            exclude 'build'
+        }
+        outputs.dir "build"
+    }
+
+    assemble.dependsOn buildFrontend
+
+    task deploy(type: Copy, dependsOn: [assemble]) {
+        from file(mainBuildDir)
+        into "$cuba.tomcat.dir/webapps/$frontAppDir"
+    }
+
+    war {
+        from file(mainBuildDir)
+    }
+
+}
+
 task undeploy(type: Delete, dependsOn: ":${modulePrefix}-web:cleanConf") {
     delete("$cuba.tomcat.dir/shared")
     delete("$cuba.tomcat.dir/webapps/${modulePrefix}-core")
     delete("$cuba.tomcat.dir/webapps/${modulePrefix}")
+    delete("$cuba.tomcat.dir/webapps/${modulePrefix}-front")
 }
 
-task restart(dependsOn: ['stop', ":${modulePrefix}-core:deploy", ":${modulePrefix}-web:deploy"], description: 'Redeploys applications and restarts local Tomcat') {
+task restart(dependsOn: ['stop', ":${modulePrefix}-core:deploy", ":${modulePrefix}-web:deploy", ":${modulePrefix}-web-toolkit:deploy"], description: 'Redeploys applications and restarts local Tomcat') {
     doLast {
         ant.waitfor(maxwait: 6, maxwaitunit: 'second', checkevery: 2, checkeveryunit: 'second') {
             not {
@@ -210,13 +294,10 @@ task restart(dependsOn: ['stop', ":${modulePrefix}-core:deploy", ":${modulePrefi
 }
 
 task buildWar(type: CubaWarBuilding) {
-    coreContextXmlPath = 'modules/core/web/META-INF/context.xml'
-    webXmlPath = 'modules/web/web/WEB-INF/web.xml'
-    appProperties = ['cuba.automaticDatabaseUpdate': true]
     includeJdbcDriver = true
     includeContextXml = true
-    appHome = '${catalina.base}/work/app_home'
-
-
-
+    appProperties = ['cuba.automaticDatabaseUpdate': true]
+    webXmlPath = 'modules/web/web/WEB-INF/single-war-web.xml'
+    appHome = '../app_home'
+    coreContextXmlPath = 'modules/core/web/META-INF/war-context.xml'
 }
